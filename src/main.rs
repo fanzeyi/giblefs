@@ -1,12 +1,27 @@
 use anyhow::Result;
-use clap::clap_app;
 use std::ffi::OsStr;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use structopt::StructOpt;
 
 mod fs;
+mod git;
+mod inode;
+
+use crate::git::GitRepo;
+
+#[derive(StructOpt)]
+struct Options {
+    repo: PathBuf,
+    mount: PathBuf,
+
+    #[structopt(short, long)]
+    debug: bool,
+}
 
 fn main() -> Result<()> {
+    better_panic::install();
     env_logger::init();
 
     let stop = Arc::new(AtomicBool::new(false));
@@ -18,25 +33,16 @@ fn main() -> Result<()> {
         }
     })?;
 
-    let matches = clap_app!(gilber =>
-        (about: "Git Filesystem")
-        (@arg REPO: -r --repo +required "Path to repository to mount")
-        (@arg MOUNT: +required "Path to mount the filesystem")
-    )
-    .get_matches();
+    let options = Options::from_args();
 
-    let options: Vec<&OsStr> = ["-o", "ro", "-o", "fsname=gilber"]
+    let mount_options: Vec<&OsStr> = ["-o", "ro", "-o", "fsname=gilber"]
         .iter()
         .map(|x| x.as_ref())
         .collect();
 
-    let _mount = unsafe {
-        fuse::spawn_mount(
-            fs::GilberFS {},
-            &matches.value_of("MOUNT").unwrap(),
-            &options,
-        )?
-    };
+    let fs = fs::GilberFS::new(options.repo)?;
+
+    let _mount = unsafe { fuse::spawn_mount(fs, &options.mount, &mount_options)? };
 
     while !stop.load(Ordering::SeqCst) {}
 
