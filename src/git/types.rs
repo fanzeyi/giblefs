@@ -2,14 +2,25 @@ use crate::fs::{FileAttrBuilder, ToFileAttr};
 use crate::inode::{Ino, Inode};
 use anyhow::{anyhow, Result};
 use fuse::FileAttr;
-use git2::{Blob, Commit, Object, Tree};
+use git2::{Blob, Commit, Object, Oid, Tree};
 use std::convert::TryFrom;
 use time::Timespec;
 
 macro_rules! impl_types {
     ($type: ident, $smtype: ident) => {
         paste::item! {
-            pub struct [<Git $type>]<'a>(Ino, $type<'a>);
+            // (inode, commit hash, object)
+            pub struct [<Git $type>]<'a>(Ino, Oid, $type<'a>);
+
+            impl<'a> [<Git $type>]<'a> {
+                pub fn inode(&self) -> Ino {
+                    self.0
+                }
+
+                pub fn parent(&self) -> Oid {
+                    self.1
+                }
+            }
 
             impl<'a> Inode for [<Git $type>]<'a> {
                 fn ino(&self) -> Ino {
@@ -19,18 +30,18 @@ macro_rules! impl_types {
 
             impl<'a> AsRef<$type<'a>> for [<Git $type>]<'a> {
                 fn as_ref(&self) -> &$type<'a> {
-                    &self.1
+                    &self.2
                 }
             }
 
-            impl<'a> TryFrom<(Ino, Object<'a>)> for [<Git $type>]<'a> {
+            impl<'a> TryFrom<(Ino, Oid, Object<'a>)> for [<Git $type>]<'a> {
                 type Error = anyhow::Error;
 
-                fn try_from((ino, object): (Ino, Object<'a>)) -> Result<[<Git $type>]<'a>> {
+                fn try_from((ino, commit, object): (Ino, Oid, Object<'a>)) -> Result<[<Git $type>]<'a>> {
                     let result = object.[<into_ $smtype>]();
 
                     if let Ok($smtype) = result {
-                        Ok([<Git $type>](ino, $smtype))
+                        Ok([<Git $type>](ino, commit, $smtype))
                     } else {
                         Err(anyhow!(format!("not expected {}", stringify!($smtype))))
                     }
@@ -47,7 +58,7 @@ impl<'a> ToFileAttr for GitCommit<'a> {
         FileAttrBuilder::new()
             .ino(self.ino())
             .directory()
-            .time(Timespec::new(self.1.time().seconds(), 0))
+            .time(Timespec::new(self.as_ref().time().seconds(), 0))
             .nlink(2)
             .build()
     }
@@ -60,7 +71,7 @@ impl<'a> ToFileAttr for GitTree<'a> {
         FileAttrBuilder::new()
             .ino(self.ino())
             .directory()
-            .nlink(2 + self.1.len() as u32)
+            .nlink(2 + self.as_ref().len() as u32)
             .build()
     }
 }

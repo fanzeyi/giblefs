@@ -35,7 +35,7 @@ impl FileAttrBuilder {
     }
 
     pub fn ino(mut self, ino: Ino) -> Self {
-        self.ino = ino.0;
+        self.ino = ino.value();
         self
     }
 

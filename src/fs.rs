@@ -7,7 +7,7 @@ use fuse::{
 use git2::{ObjectType, Oid};
 use lazy_static::lazy_static;
 use libc::ENOENT;
-use log::error;
+use log::{debug, error};
 use std::convert::TryFrom;
 use std::ffi::{OsStr, OsString};
 use std::os::unix::ffi::OsStrExt;
@@ -90,17 +90,19 @@ impl Filesystem for GilberFS {
             }
         };
 
+        let parent = tree.parent();
+
         drop(tree);
 
         match kind {
             Some(ObjectType::Blob) => {
-                if let Ok(blob) = self.repo.get_blob(oid) {
+                if let Ok(blob) = self.repo.get_blob(parent, oid) {
                     reply.entry(&TTL, &blob.to_file_attr(), 0);
                     return;
                 }
             }
             Some(ObjectType::Tree) => {
-                if let Ok(tree) = self.repo.get_tree(oid) {
+                if let Ok(tree) = self.repo.get_tree(parent, oid) {
                     reply.entry(&TTL, &tree.to_file_attr(), 0);
                     return;
                 }
@@ -180,24 +182,36 @@ impl Filesystem for GilberFS {
                 let name = OsString::from(name);
                 let mode = entry.filemode();
                 let kind = entry.kind();
-                (idx as i64, oid, name, kind, mode)
+                (idx as i64 + 3, oid, name, kind, mode)
             })
             .collect();
-
+        let parent = tree.parent();
+        let ino = tree.inode();
         drop(tree);
 
-        // TODO: handle . and ..
+        if !(offset >= 1) {
+            reply.add(ino.value(), 1, FileType::Directory, ".");
+            debug!("{} {} {}", ino.value(), 1, ".");
+        }
+
+        if !(offset >= 2) {
+            reply.add(ino.parent(), 2, FileType::Directory, "..");
+            debug!("{} {} {}", ino.parent(), 2, "..");
+        }
+
+        let offset = if offset >= 2 { offset - 2 } else { 0 };
 
         for (idx, oid, name, kind, _mode) in entries.into_iter().skip(offset as usize) {
-            if let Ok((ino, obj)) = self.repo.get_object(oid, kind) {
+            if let Ok((ino, _, obj)) = self.repo.get_object(parent, oid, kind) {
+                debug!("{} {} {:?}", ino.value(), idx, &name);
                 match obj.kind() {
                     Some(ObjectType::Blob) => {
                         // handle blobs
-                        reply.add(ino.0, idx + 1, FileType::RegularFile, name);
+                        reply.add(ino.value(), idx, FileType::RegularFile, name);
                     }
                     Some(ObjectType::Tree) => {
                         // handle trees
-                        reply.add(ino.0, idx + 1, FileType::Directory, name);
+                        reply.add(ino.value(), idx, FileType::Directory, name);
                     }
                     Some(kind) => {
                         error!("received impossible object type {} for {}", kind, oid);
