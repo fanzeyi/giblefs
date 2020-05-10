@@ -4,12 +4,14 @@ use anyhow::Result;
 use fuse::{
     FileAttr, FileType, Filesystem, ReplyAttr, ReplyData, ReplyDirectory, ReplyEntry, Request,
 };
-use git2::Oid;
+use git2::{ObjectType, Oid};
 use lazy_static::lazy_static;
 use libc::ENOENT;
+use log::error;
 use std::convert::TryFrom;
-use std::ffi::OsStr;
-use std::path::PathBuf;
+use std::ffi::{OsStr, OsString};
+use std::os::unix::ffi::OsStrExt;
+use std::path::{Path, PathBuf};
 use time::Timespec;
 
 pub mod attr;
@@ -50,7 +52,7 @@ impl GilberFS {
 
     fn lookup_commit(&mut self, hash: &str) -> Result<FileAttr> {
         let oid = Oid::from_str(hash)?;
-        let commit = self.repo.get_commit(oid)?;
+        let commit = self.repo.get_tree_by_commit(oid)?;
         Ok(commit.to_file_attr())
     }
 }
@@ -65,6 +67,45 @@ impl Filesystem for GilberFS {
                     return;
                 }
             }
+
+            reply.error(ENOENT);
+            return;
+        }
+
+        // you can only `lookup` on a tree
+        let tree = match self.repo.get_tree_by_inode(parent.into()) {
+            Ok(tree) => tree,
+            Err(_) => {
+                reply.error(ENOENT);
+                return;
+            }
+        };
+
+        // entry not found
+        let (oid, kind) = match tree.as_ref().get_path(&Path::new(&name)) {
+            Ok(entry) => (entry.id(), entry.kind()),
+            Err(_) => {
+                reply.error(ENOENT);
+                return;
+            }
+        };
+
+        drop(tree);
+
+        match kind {
+            Some(ObjectType::Blob) => {
+                if let Ok(blob) = self.repo.get_blob(oid) {
+                    reply.entry(&TTL, &blob.to_file_attr(), 0);
+                    return;
+                }
+            }
+            Some(ObjectType::Tree) => {
+                if let Ok(tree) = self.repo.get_tree(oid) {
+                    reply.entry(&TTL, &tree.to_file_attr(), 0);
+                    return;
+                }
+            }
+            _ => (),
         }
 
         reply.error(ENOENT);
@@ -73,8 +114,6 @@ impl Filesystem for GilberFS {
     fn getattr(&mut self, _req: &Request, ino: u64, reply: ReplyAttr) {
         if ino == 1 {
             reply.attr(&TTL, &ROOT_ATTR);
-        } else if let Ok(commit) = self.repo.get_commit_by_inode(ino.into()) {
-            reply.attr(&TTL, &commit.to_file_attr());
         } else if let Ok(tree) = self.repo.get_tree_by_inode(ino.into()) {
             reply.attr(&TTL, &tree.to_file_attr());
         } else if let Ok(blob) = self.repo.get_blob_by_inode(ino.into()) {
@@ -103,8 +142,6 @@ impl Filesystem for GilberFS {
                 // offset or size is too big for us to handle
                 reply.error(libc::EINVAL)
             }
-        } else if let Ok(_) = self.repo.get_commit_by_inode(ino.into()) {
-            reply.error(libc::EISDIR);
         } else if let Ok(_) = self.repo.get_tree_by_inode(ino.into()) {
             reply.error(libc::EISDIR);
         } else {
@@ -125,28 +162,55 @@ impl Filesystem for GilberFS {
             return;
         }
 
-        let maybe_tree_id = if let Ok(commit) = self.repo.get_commit_by_inode(ino.into()) {
-            Some(commit.as_ref().tree_id())
-        } else {
-            None
+        let tree = match self.repo.get_tree_by_inode(ino.into()) {
+            Ok(tree) => tree,
+            Err(_) => {
+                reply.error(ENOENT);
+                return;
+            }
         };
 
-        if let Some(oid) = maybe_tree_id {
-            let tree = self.repo.get_tree(oid);
-            // todo
+        let entries: Vec<_> = tree
+            .as_ref()
+            .iter()
+            .enumerate()
+            .map(|(idx, entry)| {
+                let oid = entry.id();
+                let name = OsStr::from_bytes(entry.name_bytes());
+                let name = OsString::from(name);
+                let mode = entry.filemode();
+                let kind = entry.kind();
+                (idx as i64, oid, name, kind, mode)
+            })
+            .collect();
 
-            let entries = vec![
-                (1, FileType::Directory, "."),
-                (1, FileType::Directory, ".."),
-                (2, FileType::RegularFile, "hello.txt"),
-            ];
+        drop(tree);
 
-            for (i, entry) in entries.into_iter().enumerate().skip(offset as usize) {
-                // i + 1 means the index of the next entry
-                reply.add(entry.0, (i + 1) as i64, entry.1, entry.2);
+        // TODO: handle . and ..
+
+        for (idx, oid, name, kind, _mode) in entries.into_iter().skip(offset as usize) {
+            if let Ok((ino, obj)) = self.repo.get_object(oid, kind) {
+                match obj.kind() {
+                    Some(ObjectType::Blob) => {
+                        // handle blobs
+                        reply.add(ino.0, idx + 1, FileType::RegularFile, name);
+                    }
+                    Some(ObjectType::Tree) => {
+                        // handle trees
+                        reply.add(ino.0, idx + 1, FileType::Directory, name);
+                    }
+                    Some(kind) => {
+                        error!("received impossible object type {} for {}", kind, oid);
+                    }
+                    None => {
+                        error!("unable to detect object type for {}", oid);
+                    }
+                }
+            } else {
+                error!("unable to find {}", oid);
             }
         }
 
-        reply.error(ENOENT);
+        reply.ok();
     }
 }

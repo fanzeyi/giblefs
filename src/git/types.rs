@@ -32,7 +32,7 @@ macro_rules! impl_types {
                     if let Ok($smtype) = result {
                         Ok([<Git $type>](ino, $smtype))
                     } else {
-                        Err(anyhow!("not expected object type"))
+                        Err(anyhow!(format!("not expected {}", stringify!($smtype))))
                     }
                 }
             }

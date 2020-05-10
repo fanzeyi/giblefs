@@ -63,12 +63,11 @@ impl GitRepo {
         }
     }
 
-    pub fn get_commit(&mut self, hash: Oid) -> Result<GitCommit> {
-        GitCommit::try_from(self.get_object(hash, Some(ObjectType::Commit))?)
-    }
-
-    pub fn get_commit_by_inode(&self, ino: Ino) -> Result<GitCommit> {
-        GitCommit::try_from(self.get_object_by_inode(ino, Some(ObjectType::Commit))?)
+    pub fn get_tree_by_commit(&mut self, hash: Oid) -> Result<GitTree> {
+        let commit = self.repo.find_commit(hash)?;
+        let root_tree = commit.tree_id();
+        drop(commit);
+        self.get_tree(root_tree)
     }
 
     pub fn get_tree(&mut self, hash: Oid) -> Result<GitTree> {

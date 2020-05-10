@@ -9,8 +9,6 @@ mod fs;
 mod git;
 mod inode;
 
-use crate::git::GitRepo;
-
 #[derive(StructOpt)]
 struct Options {
     repo: PathBuf,
