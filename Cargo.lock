@@ -201,6 +201,7 @@ dependencies = [
  "lazy_static",
  "libc",
  "log 0.4.8",
+ "nix",
  "paste",
  "structopt",
  "time",

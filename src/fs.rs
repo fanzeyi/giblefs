@@ -41,19 +41,23 @@ lazy_static! {
 
 pub struct GilberFS {
     repo: GitRepo,
+    builder: FileAttrBuilder,
 }
 
 impl GilberFS {
-    pub fn new(repo: PathBuf) -> Result<Self> {
+    pub fn new(repo: PathBuf, uid: libc::uid_t, gid: libc::gid_t) -> Result<Self> {
+        let builder = FileAttrBuilder::new().uid(uid).gid(gid);
+
         Ok(GilberFS {
             repo: GitRepo::new(repo, InodeGen::new())?,
+            builder,
         })
     }
 
     fn lookup_commit(&mut self, hash: &str) -> Result<FileAttr> {
         let oid = Oid::from_str(hash)?;
         let commit = self.repo.get_tree_by_commit(oid)?;
-        Ok(commit.to_file_attr())
+        Ok(commit.to_file_attr(self.builder.clone()))
     }
 }
 
@@ -97,13 +101,13 @@ impl Filesystem for GilberFS {
         match kind {
             Some(ObjectType::Blob) => {
                 if let Ok(blob) = self.repo.get_blob(parent, oid) {
-                    reply.entry(&TTL, &blob.to_file_attr(), 0);
+                    reply.entry(&TTL, &blob.to_file_attr(self.builder.clone()), 0);
                     return;
                 }
             }
             Some(ObjectType::Tree) => {
                 if let Ok(tree) = self.repo.get_tree(parent, oid) {
-                    reply.entry(&TTL, &tree.to_file_attr(), 0);
+                    reply.entry(&TTL, &tree.to_file_attr(self.builder.clone()), 0);
                     return;
                 }
             }
@@ -117,9 +121,9 @@ impl Filesystem for GilberFS {
         if ino == 1 {
             reply.attr(&TTL, &ROOT_ATTR);
         } else if let Ok(tree) = self.repo.get_tree_by_inode(ino.into()) {
-            reply.attr(&TTL, &tree.to_file_attr());
+            reply.attr(&TTL, &tree.to_file_attr(self.builder.clone()));
         } else if let Ok(blob) = self.repo.get_blob_by_inode(ino.into()) {
-            reply.attr(&TTL, &blob.to_file_attr());
+            reply.attr(&TTL, &blob.to_file_attr(self.builder.clone()));
         } else {
             reply.error(ENOENT);
         }
@@ -164,6 +168,14 @@ impl Filesystem for GilberFS {
             return;
         }
 
+        let offset = if let Ok(offset) = usize::try_from(offset) {
+            offset
+        } else {
+            error!("invalid offset: {}", offset);
+            reply.error(libc::EINVAL);
+            return;
+        };
+
         let tree = match self.repo.get_tree_by_inode(ino.into()) {
             Ok(tree) => tree,
             Err(_) => {
@@ -171,7 +183,8 @@ impl Filesystem for GilberFS {
                 return;
             }
         };
-
+        let parent = tree.parent();
+        let ino = tree.inode();
         let entries: Vec<_> = tree
             .as_ref()
             .iter()
@@ -185,8 +198,6 @@ impl Filesystem for GilberFS {
                 (idx as i64 + 3, oid, name, kind, mode)
             })
             .collect();
-        let parent = tree.parent();
-        let ino = tree.inode();
         drop(tree);
 
         if !(offset >= 1) {
@@ -199,9 +210,9 @@ impl Filesystem for GilberFS {
             debug!("{} {} {}", ino.parent(), 2, "..");
         }
 
-        let offset = if offset >= 2 { offset - 2 } else { 0 };
+        let offset = offset.saturating_sub(2);
 
-        for (idx, oid, name, kind, _mode) in entries.into_iter().skip(offset as usize) {
+        for (idx, oid, name, kind, _mode) in entries.into_iter().skip(offset) {
             if let Ok((ino, _, obj)) = self.repo.get_object(parent, oid, kind) {
                 debug!("{} {} {:?}", ino.value(), idx, &name);
                 match obj.kind() {

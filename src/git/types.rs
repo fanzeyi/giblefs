@@ -54,8 +54,8 @@ macro_rules! impl_types {
 impl_types!(Commit, commit);
 
 impl<'a> ToFileAttr for GitCommit<'a> {
-    fn to_file_attr(&self) -> FileAttr {
-        FileAttrBuilder::new()
+    fn to_file_attr(&self, builder: FileAttrBuilder) -> FileAttr {
+        builder
             .ino(self.ino())
             .directory()
             .time(Timespec::new(self.as_ref().time().seconds(), 0))
@@ -67,8 +67,8 @@ impl<'a> ToFileAttr for GitCommit<'a> {
 impl_types!(Tree, tree);
 
 impl<'a> ToFileAttr for GitTree<'a> {
-    fn to_file_attr(&self) -> FileAttr {
-        FileAttrBuilder::new()
+    fn to_file_attr(&self, builder: FileAttrBuilder) -> FileAttr {
+        builder
             .ino(self.ino())
             .directory()
             .nlink(2 + self.as_ref().len() as u32)
@@ -79,8 +79,8 @@ impl<'a> ToFileAttr for GitTree<'a> {
 impl_types!(Blob, blob);
 
 impl<'a> ToFileAttr for GitBlob<'a> {
-    fn to_file_attr(&self) -> FileAttr {
-        FileAttrBuilder::new()
+    fn to_file_attr(&self, builder: FileAttrBuilder) -> FileAttr {
+        builder
             .ino(self.ino())
             .file()
             .size(self.as_ref().size())

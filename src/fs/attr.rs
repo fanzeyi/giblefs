@@ -8,7 +8,7 @@ lazy_static! {
 }
 
 pub trait ToFileAttr {
-    fn to_file_attr(&self) -> FileAttr;
+    fn to_file_attr(&self, builder: FileAttrBuilder) -> FileAttr;
 }
 
 #[derive(Clone)]
@@ -71,6 +71,16 @@ impl FileAttrBuilder {
 
     pub fn nlink(mut self, nlink: u32) -> Self {
         self.nlink = nlink;
+        self
+    }
+
+    pub fn uid(mut self, uid: libc::uid_t) -> Self {
+        self.uid = uid;
+        self
+    }
+
+    pub fn gid(mut self, gid: libc::gid_t) -> Self {
+        self.gid = gid;
         self
     }
 
